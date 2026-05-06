@@ -11,23 +11,22 @@ st.set_page_config(page_title="RH Comunica", layout="centered", initial_sidebar_
 FILE_MENSAGENS = "MENSAGENS_ENVIADAS.csv"
 FILE_COLABS = "DADOS_COLABORADORES.xlsx"
 
-# Inicializa o arquivo de mensagens se não existir
+# Inicializa o arquivo de mensagens com colunas de texto (evita erros de tipo)
 if not os.path.exists(FILE_MENSAGENS):
     pd.DataFrame(columns=["data_envio", "cpf_destino", "nome_destino", "mensagem", "lido", "data_leitura"]).to_csv(FILE_MENSAGENS, index=False)
 
 # --- FUNÇÕES DE LIMPEZA E LOGÍSTICA ---
 def limpar_cpf(cpf):
     """Garante que o CPF tenha 11 dígitos numéricos, tratando zeros à esquerda."""
-    s = str(cpf).split('.')[0] # Remove .0 se o Excel ler como float
-    s = re.sub(r'\D', '', s)   # Remove qualquer caractere não numérico
-    return s.zfill(11)         # Preenche com zeros à esquerda até ter 11 dígitos
+    s = str(cpf).split('.')[0]
+    s = re.sub(r'\D', '', s)
+    return s.zfill(11)
 
 @st.cache_data(ttl=60)
 def carregar_colaboradores():
     if os.path.exists(FILE_COLABS):
         try:
             df = pd.read_excel(FILE_COLABS)
-            # Normaliza os nomes das colunas (tira espaços extras)
             df.columns = [c.strip() for c in df.columns]
             df['CPF_LIMPO'] = df['CPF'].apply(limpar_cpf)
             return df
@@ -37,7 +36,8 @@ def carregar_colaboradores():
     return None
 
 def carregar_mensagens():
-    return pd.read_csv(FILE_MENSAGENS, dtype={"cpf_destino": str})
+    # Forçamos todas as colunas a serem lidas como texto (string) para evitar erros de tipo
+    return pd.read_csv(FILE_MENSAGENS, dtype=str).fillna("")
 
 # --- INTERFACE PRINCIPAL ---
 df_base = carregar_colaboradores()
@@ -48,13 +48,10 @@ if "logado" not in st.session_state:
 # --- TELA DE LOGIN ---
 if not st.session_state.logado:
     st.title("📲 RH Comunica - Login")
-    st.write("Acesse com seu CPF para ver seus comunicados.")
-    
     cpf_input = st.text_input("Digite seu CPF (apenas números):", placeholder="Ex: 050...")
     
     if st.button("Entrar no Sistema", use_container_width=True):
-        # CPF "000" continua sendo a porta de entrada do Admin
-        if cpf_input == "000":
+        if cpf_input == "000": # Senha Admin
             st.session_state.update({"logado": True, "is_admin": True})
             st.rerun()
             
@@ -63,21 +60,19 @@ if not st.session_state.logado:
         if df_base is not None:
             user = df_base[df_base['CPF_LIMPO'] == cpf_busca]
             if not user.empty:
-                nome_completo = user.iloc[0]['Nome']
                 st.session_state.update({
                     "logado": True, 
                     "user_cpf": cpf_busca, 
-                    "user_nome": nome_completo
+                    "user_nome": user.iloc[0]['Nome']
                 })
                 st.rerun()
             else:
-                st.error("CPF não encontrado na base ativa do RH.")
+                st.error("CPF não encontrado na base do RH.")
         else:
-            st.warning("O RH ainda não subiu a base de dados. Tente novamente mais tarde.")
+            st.warning("O RH ainda não subiu a base de dados.")
 
-# --- SISTEMA LOGADO ---
 else:
-    # BOTÃO SAIR (Fica no topo para facilitar no celular)
+    # BOTÃO SAIR
     if st.sidebar.button("Logoff / Sair"):
         st.session_state.logado = False
         st.rerun()
@@ -88,14 +83,13 @@ else:
         
         with tab3:
             st.subheader("Atualizar Colaboradores")
-            st.info("Sempre que exportar uma nova lista do seu sistema, suba o arquivo .xlsx aqui.")
             new_file = st.file_uploader("Nova Planilha Excel", type="xlsx")
             if st.button("Substituir Base Atual"):
                 if new_file:
                     with open(FILE_COLABS, "wb") as f:
                         f.write(new_file.getbuffer())
                     st.cache_data.clear()
-                    st.success("Base de dados atualizada com sucesso!")
+                    st.success("Base de dados atualizada!")
                     st.rerun()
 
         with tab1:
@@ -107,8 +101,7 @@ else:
                     obras = st.multiselect("Selecione as Obras:", options=sorted(df_base['OBRA'].unique()))
                     cpfs_alvo = df_base[df_base['OBRA'].isin(obras)]['CPF_LIMPO'].tolist()
                 else:
-                    txt_area = st.text_area("Cole os CPFs aqui (separados por vírgula, espaço ou linha):")
-                    # Extrai qualquer sequência de números e garante os 11 dígitos
+                    txt_area = st.text_area("Cole os CPFs aqui:")
                     raw_cpfs = re.findall(r'\d+', txt_area)
                     cpfs_alvo = [c.zfill(11) for c in raw_cpfs if len(c) <= 11]
                 
@@ -120,10 +113,8 @@ else:
                         df_m = carregar_mensagens()
                         novas = []
                         for c in cpfs_alvo:
-                            # Busca o nome na base para o relatório
                             match = df_base[df_base['CPF_LIMPO'] == c]
                             nome = match.iloc[0]['Nome'] if not match.empty else "NÃO CADASTRADO"
-                            
                             novas.append({
                                 "data_envio": datetime.now().strftime("%d/%m/%Y %H:%M"),
                                 "cpf_destino": c,
@@ -132,44 +123,35 @@ else:
                                 "lido": "Não",
                                 "data_leitura": ""
                             })
-                        
-                        df_m = pd.concat([df_m, pd.DataFrame(novas)], ignore_index=True)
-                        df_m.to_csv(FILE_MENSAGENS, index=False)
-                        st.success(f"Mensagem enviada para {len(cpfs_alvo)} pessoas!")
+                        pd.concat([df_m, pd.DataFrame(novas)], ignore_index=True).to_csv(FILE_MENSAGENS, index=False)
+                        st.success(f"Enviado para {len(cpfs_alvo)} pessoas!")
                     else:
                         st.error("Preencha os destinatários e a mensagem.")
-            else:
-                st.error("Suba a planilha de colaboradores primeiro na aba 'Base de Dados'.")
 
         with tab2:
             st.subheader("Histórico de Envios")
-            df_rep = carregar_mensagens()
-            if not df_rep.empty:
-                st.dataframe(df_rep.sort_values(by="data_envio", ascending=False), use_container_width=True)
-            else:
-                st.write("Nenhuma mensagem enviada ainda.")
+            st.dataframe(carregar_mensagens().sort_values(by="data_envio", ascending=False), use_container_width=True)
 
     # --- VISÃO DO COLABORADOR ---
     else:
-        primeiro_nome = st.session_state.user_nome.split()[0]
-        st.title(f"Olá, {primeiro_nome}!")
-        
+        st.title(f"Olá, {st.session_state.user_nome.split()[0]}!")
         df_m = carregar_mensagens()
         minhas = df_m[df_m['cpf_destino'] == st.session_state.user_cpf].copy()
         
         if not minhas.empty:
-            st.write("Confira abaixo seus comunicados recentes:")
-            # Mostra as mensagens da mais nova para a mais antiga
             for _, r in minhas.iloc[::-1].iterrows():
                 with st.chat_message("assistant"):
                     st.write(f"📅 **{r['data_envio']}**")
                     st.markdown(r['mensagem'])
             
-            # Marca como lido no CSV
-            idx_nao_lidas = df_m[(df_m['cpf_destino'] == st.session_state.user_cpf) & (df_m['lido'] == "Não")].index
-            if not idx_nao_lidas.empty:
-                df_m.loc[idx_nao_lidas, 'lido'] = "Sim"
-                df_m.loc[idx_nao_lidas, 'data_leitura'] = datetime.now().strftime("%d/%m/%Y %H:%M")
+            # Lógica corrigida para marcar como lido
+            # Buscamos as mensagens do usuário logado que ainda estão como "Não" lidas
+            indices_para_atualizar = df_m[(df_m['cpf_destino'] == st.session_state.user_cpf) & (df_m['lido'] == "Não")].index
+            
+            if len(indices_para_atualizar) > 0:
+                df_m.loc[indices_para_atualizar, 'lido'] = "Sim"
+                df_m.loc[indices_para_atualizar, 'data_leitura'] = datetime.now().strftime("%d/%m/%Y %H:%M")
                 df_m.to_csv(FILE_MENSAGENS, index=False)
+                st.toast("Mensagens visualizadas!")
         else:
             st.info("Você não tem comunicados pendentes no momento.")
